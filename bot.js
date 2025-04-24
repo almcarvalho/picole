@@ -9,6 +9,7 @@ const client = new Client({
 
 let iaAtiva = true;
 const admins = process.env.ADMIN_WHATSAPPS.split(',');
+const threads = {}; // Armazena threads por número
 
 client.on('qr', qr => {
     qrcode.generate(qr, { small: true });
@@ -22,17 +23,10 @@ client.on('ready', () => {
 client.on('message', async msg => {
     const pergunta = msg.body.trim();
     const remetente = msg.from.replace(/@c.us$/, '');
-
-    //console.log("pergunta: " +  pergunta );
-
-    //console.log("from: " + remetente );
-
-    // Verifica se remetente é admin
     const isAdmin = admins.includes(remetente);
 
     // Comandos mágicos para admins
     if (isAdmin) {
-       // console.log("from admin: " + remetente );
         if (pergunta.toLowerCase() === '/stopai') {
             iaAtiva = false;
             msg.reply('🤖 IA desativada com sucesso!');
@@ -44,7 +38,7 @@ client.on('message', async msg => {
         }
     }
 
-    if (!iaAtiva) return; // Ignora tudo se a IA estiver desligada
+    if (!iaAtiva) return;
 
     const headers = {
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
@@ -53,20 +47,37 @@ client.on('message', async msg => {
     };
 
     try {
-        const runRes = await axios.post(
-            'https://api.openai.com/v1/threads/runs',
+        let threadId = threads[remetente];
+
+        // 1. Cria thread se for a primeira vez
+        if (!threadId) {
+            const threadRes = await axios.post('https://api.openai.com/v1/threads', {}, { headers });
+            threadId = threadRes.data.id;
+            threads[remetente] = threadId;
+        }
+
+        // 2. Adiciona mensagem do usuário à thread existente
+        await axios.post(
+            `https://api.openai.com/v1/threads/${threadId}/messages`,
             {
-                assistant_id: process.env.OPENAI_ASSISTANT_ID,
-                thread: {
-                    messages: [{ role: 'user', content: pergunta }]
-                }
+                role: 'user',
+                content: pergunta
             },
             { headers }
         );
 
-        const threadId = runRes.data.thread_id;
+        // 3. Executa o assistente com a thread atualizada
+        const runRes = await axios.post(
+            `https://api.openai.com/v1/threads/${threadId}/runs`,
+            {
+                assistant_id: process.env.OPENAI_ASSISTANT_ID
+            },
+            { headers }
+        );
+
         const runId = runRes.data.id;
 
+        // 4. Espera a execução completar
         let status = 'queued';
         while (status !== 'completed' && status !== 'failed') {
             await new Promise(resolve => setTimeout(resolve, 1500));
@@ -82,6 +93,7 @@ client.on('message', async msg => {
             return;
         }
 
+        // 5. Busca a última resposta do assistente
         const mensagens = await axios.get(
             `https://api.openai.com/v1/threads/${threadId}/messages`,
             { headers }

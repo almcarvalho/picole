@@ -19,26 +19,68 @@ client.on('ready', () => {
 client.on('message', async msg => {
     const pergunta = msg.body;
 
+    const headers = {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'assistants=v2',
+        'Content-Type': 'application/json'
+    };
+
     try {
-        const resposta = await axios.post(
-            'https://api.openai.com/v1/chat/completions',
+        // 1. Cria uma thread com mensagem + run
+        const runRes = await axios.post(
+            'https://api.openai.com/v1/threads/runs',
             {
-                model: process.env.GPT_CUSTOM_ID,
-                messages: [{ role: 'user', content: pergunta }],
-                temperature: 0.7
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-                    'Content-Type': 'application/json'
+                assistant_id: process.env.OPENAI_ASSISTANT_ID,
+                thread: {
+                    messages: [
+                        {
+                            role: 'user',
+                            content: pergunta
+                        }
+                    ]
                 }
-            }
+            },
+            { headers }
         );
 
-        const respostaTexto = resposta.data.choices[0].message.content;
-        msg.reply(respostaTexto);
+        const threadId = runRes.data.thread_id;
+        const runId = runRes.data.id;
+
+        // 2. Aguarda a conclusão da execução
+        let status = 'queued';
+        while (status !== 'completed' && status !== 'failed') {
+            await new Promise(resolve => setTimeout(resolve, 1500));
+            const runCheck = await axios.get(
+                `https://api.openai.com/v1/threads/${threadId}/runs/${runId}`,
+                { headers }
+            );
+            status = runCheck.data.status;
+        }
+
+        if (status === 'failed') {
+            msg.reply('Tive um problema para responder. Tenta novamente em instantes!');
+            return;
+        }
+
+        // 3. Busca a resposta do assistente
+        const mensagens = await axios.get(
+            `https://api.openai.com/v1/threads/${threadId}/messages`,
+            { headers }
+        );
+
+        const resposta = mensagens.data.data
+            .reverse()
+            .find(m => m.role === 'assistant')
+            ?.content[0]?.text?.value;
+
+        if (resposta) {
+            msg.reply(resposta);
+        } else {
+            msg.reply('Desculpe, não consegui entender. Pode repetir?');
+        }
+
     } catch (error) {
-        console.error('Erro ao consultar o GPT:', error.response?.data || error.message);
+        console.error('Erro ao consultar o assistente:', error.response?.data || error.message);
         msg.reply("Oops! Tive um problema para responder agora. Tenta de novo já já.");
     }
 });
